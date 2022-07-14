@@ -1,106 +1,173 @@
-import copy
-import random
-import time
-
-import torch
-import torch.nn as nn
-import syft
-import torch.optim as optim
-from torch.autograd import Variable
-
-import utils
-from exp import distributing_data
-from Funtions import *
-
+import matplotlib
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
+import copy
+import numpy as np
+from torchvision import datasets, transforms
+import torch
+import os
 
-
-class Arguments:
-    def __init__(self):
-        self.batchSize = 64  # 训练批次大小
-        self.testBatchSize = 1000
-        self.epochs = 10
-        self.lr = 0.01  # 学习率
-        self.momentum = 0.5
-        self.no_cuda = False
-        self.seed = 1
-        self.log_interval = 30
-        self.save_model = False
-        self.modelType = "CNN"
-
-
-args = Arguments()
-# device = torch.device("cuda")
-device = torch.device("cpu")
-hook = syft.TorchHook(torch)
-
-
-def init():
-    """Initialize"""
-    patternIdx = 1
-    clientNum = 10  # 客户数量
-    model = utils.MNIST_CNN_Net().to(device)
-    trainLoader = torch.load("train_loader_" + str(patternIdx) +
-                             "_" + str(args.batchSize) + ".pt")
-    testLoader = torch.load("test_loader_" + str(patternIdx) +
-                            "_" + str(args.batchSize) + ".pt")
-    return patternIdx, clientNum, model, trainLoader, testLoader
-
-
-def runFedSA(model, clientNum, client, secureClient, server, clientData, clientTarget, testLoader):
-    model.train()                  # 设置模型为训练模式
-    lossF = nn.CrossEntropyLoss()  # 损失函数选择，交叉熵函数
-    M = 5                          # 文章中的M值
-    prepareTime = getPrepareTime(clientNum)  # 模型准备时间##############################################################
-    clientModel, clientOpt = {}, {}  # worker的优化器
-    for i in range(1, clientNum + 1):
-        clientModel[str(i)] = model.copy().send(client[str(i)])
-        clientOpt[str(i)] = optim.SGD(params=clientModel[str(i)].parameters(), lr=args.lr)
-
-    currentLostTime = copy.deepcopy(prepareTime)
-    runtime = 0
-    tau = {}  # 模型延迟
-    tau_th = 999  # 模型延迟的阈值
-    for i in range(1, clientNum + 1):
-        tau[str(i)] = 0
-    tik = time.time()
-    accList = []
-    for k in range(1, 500):
-        print("\nEpoch: {:d}".format(k))
-        serverModel = model.copy().send(server)
-        chosenClients, currentLostTime, iterationTime = chooseClients(M, prepareTime, currentLostTime)      ###########
-        runtime += iterationTime
-        clientData, clientOpt, clientModel, clientTarget, lossF = \
-            localUpdate(device, chosenClients, clientData, clientOpt, clientModel, clientTarget, lossF)
-        # clientModel = localDP(device, clientModel, chosenClients)
-
-        for i in chosenClients:  # 把模型移动到secure_worker做简单平均
-            clientModel[str(i)].move(secureClient)
-        serverModel.move(secureClient)
-        model = globalAggregate(serverModel, chosenClients, clientNum, clientModel, tau, tau_th)
-        acc = modelTest("1.1", device, args, model, runtime, clientNum, testLoader)
-        accList.append(acc)
-        # 分发模型####################################################################################################
-        for choose_worker in chosenClients:
-            clientModel[str(choose_worker)] = model.copy().send(client[str(choose_worker)])
-            clientOpt[str(choose_worker)] = optim.SGD(params=clientModel[str(choose_worker)].parameters(),
-                                                      lr=args.lr)
-        # 更新延迟####################################################################################################
-        for i in range(1, clientNum + 1):
-            if str(i) in chosenClients:
-                tau[str(i)] = 0
-            else:
-                tau[str(i)] += 1
-        tok = time.time()
-        print("Total running time: {:f}\n".format(tok - tik))
-
-    plt.figure()
-    plt.plot(range(len(accList)), accList)
-    plt.ylabel('test accuracy')
-    plt.savefig('1.1CNN_64_0.01_10_acc.png')
+from utils.sampling import mnist_iid, mnist_noniid, cifar_iid, cifar_noniid
+from utils.options import args_parser
+from models.Update import LocalUpdate
+from models.Nets import MLP, CNNMnist, CNNCifar, CNNFemnist, CharLSTM
+from models.Fed import FedAvg
+from models.test import test_img
+from utils.dataset import FEMNIST, ShakeSpeare
 
 
 if __name__ == '__main__':
-    patternIdx, clientNum, model, trainLoader, testLoader = init()
-    client, secureClient, server, clientData, clientTarget = distributeData(hook, args, clientNum, trainLoader)
-    runFedSA(model, clientNum, client, secureClient, server, clientData, clientTarget, testLoader)
+    # parse args
+    torch.manual_seed(123)
+    torch.cuda.manual_seed_all(123)
+    torch.cuda.manual_seed(123)
+    np.random.seed(123)
+
+    args = args_parser()
+    args.device = torch.device('cuda:{}'.format(args.gpu) if torch.cuda.is_available() and args.gpu != -1 else 'cpu')
+
+    # load dataset and split users
+    if args.dataset == 'mnist':
+        trans_mnist = transforms.Compose([transforms.ToTensor(), transforms.Normalize((0.1307,), (0.3081,))])
+        dataset_train = datasets.MNIST('./data/mnist/', train=True, download=True, transform=trans_mnist)
+        dataset_test = datasets.MNIST('./data/mnist/', train=False, download=True, transform=trans_mnist)
+        args.num_channels = 1
+        # sample users
+        if args.iid:
+            dict_users = mnist_iid(dataset_train, args.num_users)
+        else:
+            dict_users = mnist_noniid(dataset_train, args.num_users)
+    elif args.dataset == 'cifar':
+        #trans_cifar = transforms.Compose([transforms.ToTensor(), transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))])
+        args.num_channels = 3
+        trans_cifar_train = transforms.Compose([
+            transforms.RandomCrop(32, padding=4),
+            transforms.RandomHorizontalFlip(),
+            transforms.ToTensor(),
+            transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
+        ])
+        trans_cifar_test = transforms.Compose([
+            transforms.ToTensor(),
+            transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
+        ])
+        dataset_train = datasets.CIFAR10('./data/cifar', train=True, download=True, transform=trans_cifar_train)
+        dataset_test = datasets.CIFAR10('./data/cifar', train=False, download=True, transform=trans_cifar_test)
+        if args.iid:
+            dict_users = cifar_iid(dataset_train, args.num_users)
+        else:
+            dict_users = cifar_noniid(dataset_train, args.num_users)
+    elif args.dataset == 'fashion-mnist':
+        args.num_channels = 1
+        trans_fashion_mnist = transforms.Compose([transforms.ToTensor(), transforms.Normalize((0.5,), (0.5,))])
+        dataset_train = datasets.FashionMNIST('./data/fashion-mnist', train=True, download=True,
+                                              transform=trans_fashion_mnist)
+        dataset_test  = datasets.FashionMNIST('./data/fashion-mnist', train=False, download=True,
+                                              transform=trans_fashion_mnist)
+        if args.iid:
+            dict_users = mnist_iid(dataset_train, args.num_users)
+        else:
+            dict_users = mnist_noniid(dataset_train, args.num_users)
+    elif args.dataset == 'femnist':
+        args.num_channels = 1
+        dataset_train = FEMNIST(train=True)
+        dataset_test = FEMNIST(train=False)
+        dict_users = dataset_train.get_client_dic()
+        args.num_users = len(dict_users)
+        if args.iid:
+            exit('Error: femnist dataset is naturally non-iid')
+        else:
+            print("Warning: The femnist dataset is naturally non-iid, you do not need to specify iid or non-iid")
+    elif args.dataset == 'shakespeare':
+        dataset_train = ShakeSpeare(train=True)
+        dataset_test = ShakeSpeare(train=False)
+        dict_users = dataset_train.get_client_dic()
+        args.num_users = len(dict_users)
+        if args.iid:
+            exit('Error: ShakeSpeare dataset is naturally non-iid')
+        else:
+            print("Warning: The ShakeSpeare dataset is naturally non-iid, you do not need to specify iid or non-iid")
+    else:
+        exit('Error: unrecognized dataset')
+    img_size = dataset_train[0][0].shape
+
+    # build model
+    if args.model == 'cnn' and args.dataset == 'cifar':
+        net_glob = CNNCifar(args=args).to(args.device)
+    elif args.model == 'cnn' and (args.dataset == 'mnist' or args.dataset == 'fashion-mnist'):
+        net_glob = CNNMnist(args=args).to(args.device)
+    elif args.dataset == 'femnist' and args.model == 'cnn':
+        net_glob = CNNFemnist(args=args).to(args.device)
+    elif args.dataset == 'shakespeare' and args.model == 'lstm':
+        net_glob = CharLSTM().to(args.device)
+    elif args.model == 'mlp':
+        len_in = 1
+        for x in img_size:
+            len_in *= x
+        net_glob = MLP(dim_in=len_in, dim_hidden=64, dim_out=args.num_classes).to(args.device)
+    else:
+        exit('Error: unrecognized model')
+
+    dp_epsilon = args.dp_epsilon / (args.frac * args.epochs)
+    dp_delta = args.dp_delta
+    dp_mechanism = args.dp_mechanism
+    dp_clip = args.dp_clip
+
+    print(net_glob)
+    net_glob.train()
+
+    # copy weights
+    w_glob = net_glob.state_dict()
+
+    all_clients = list(range(args.num_users))
+
+    # training
+    acc_test = []
+    learning_rate = [args.lr for i in range(args.num_users)]
+    for iter in range(args.epochs):
+        w_locals, loss_locals = [], []
+        m = max(int(args.frac * args.num_users), 1)
+        idxs_users = np.random.choice(range(args.num_users), m, replace=False)
+        begin_index = iter % (1 / args.frac)
+        idxs_clients = all_clients[int(begin_index * args.num_users * args.frac):
+                                   int((begin_index + 1) * args.num_users * args.frac)]
+        for idx in idxs_users:
+            args.lr = learning_rate[idx]
+            local = LocalUpdate(args=args, dataset=dataset_train, idxs=dict_users[idx],
+                                dp_epsilon=dp_epsilon, dp_delta=dp_delta,
+                                dp_mechanism=dp_mechanism, dp_clip=dp_clip)
+            w, loss, curLR = local.train(net=copy.deepcopy(net_glob).to(args.device))
+            learning_rate[idx] = curLR
+            w_locals.append(copy.deepcopy(w))
+            loss_locals.append(copy.deepcopy(loss))
+
+        # update global weights
+        w_glob = FedAvg(w_locals)
+        # copy weight to net_glob
+        net_glob.load_state_dict(w_glob)
+
+        # print accuracy
+        net_glob.eval()
+        acc_t, loss_t = test_img(net_glob, dataset_test, args)
+        print("Round {:3d},Testing accuracy: {:.2f}".format(iter, acc_t))
+
+        acc_test.append(acc_t.item())
+
+    rootpath = './log'
+    if not os.path.exists(rootpath):
+        os.makedirs(rootpath)
+    accfile = open(rootpath + '/accfile_fed_{}_{}_{}_iid{}_dp_{}_epsilon_{}.dat'.
+                   format(args.dataset, args.model, args.epochs, args.iid,
+                          args.dp_mechanism, args.dp_epsilon), "w")
+
+    for ac in acc_test:
+        sac = str(ac)
+        accfile.write(sac)
+        accfile.write('\n')
+    accfile.close()
+
+    # plot loss curve
+    plt.figure()
+    plt.plot(range(len(acc_test)), acc_test)
+    plt.ylabel('test accuracy')
+    plt.savefig(rootpath + '/fed_{}_{}_{}_C{}_iid{}_dp_{}_epsilon_{}_acc.png'.format(
+        args.dataset, args.model, args.epochs, args.frac, args.iid, args.dp_mechanism, args.dp_epsilon))
