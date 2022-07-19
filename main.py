@@ -1,5 +1,9 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+# Python version: 3.6
+import sys
+
 import matplotlib
-matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import copy
 import numpy as np
@@ -10,11 +14,13 @@ import os
 from utils.sampling import mnist_iid, mnist_noniid, cifar_iid, cifar_noniid
 from utils.options import args_parser
 from models.Update import LocalUpdate
-from models.Nets import MLP, CNNMnist, CNNCifar, CNNFemnist, CharLSTM
+from models.Nets import MLP, CNNMnist, CNNCifar, CNNFemnist, CharLSTM, MNIST_CNN_Net
 from models.Fed import FedAvg
 from models.test import test_img
 from utils.dataset import FEMNIST, ShakeSpeare
+from utils.Functions import *
 
+matplotlib.use('Agg')
 
 if __name__ == '__main__':
     # parse args
@@ -38,7 +44,8 @@ if __name__ == '__main__':
         else:
             dict_users = mnist_noniid(dataset_train, args.num_users)
     elif args.dataset == 'cifar':
-        #trans_cifar = transforms.Compose([transforms.ToTensor(), transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))])
+        # trans_cifar = transforms.Compose([transforms.ToTensor(), transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5,
+        # 0.5))])
         args.num_channels = 3
         trans_cifar_train = transforms.Compose([
             transforms.RandomCrop(32, padding=4),
@@ -61,8 +68,8 @@ if __name__ == '__main__':
         trans_fashion_mnist = transforms.Compose([transforms.ToTensor(), transforms.Normalize((0.5,), (0.5,))])
         dataset_train = datasets.FashionMNIST('./data/fashion-mnist', train=True, download=True,
                                               transform=trans_fashion_mnist)
-        dataset_test  = datasets.FashionMNIST('./data/fashion-mnist', train=False, download=True,
-                                              transform=trans_fashion_mnist)
+        dataset_test = datasets.FashionMNIST('./data/fashion-mnist', train=False, download=True,
+                                             transform=trans_fashion_mnist)
         if args.iid:
             dict_users = mnist_iid(dataset_train, args.num_users)
         else:
@@ -87,14 +94,15 @@ if __name__ == '__main__':
         else:
             print("Warning: The ShakeSpeare dataset is naturally non-iid, you do not need to specify iid or non-iid")
     else:
-        exit('Error: unrecognized dataset')
+        sys.exit('Error: unrecognized dataset')
     img_size = dataset_train[0][0].shape
 
     # build model
     if args.model == 'cnn' and args.dataset == 'cifar':
         net_glob = CNNCifar(args=args).to(args.device)
     elif args.model == 'cnn' and (args.dataset == 'mnist' or args.dataset == 'fashion-mnist'):
-        net_glob = CNNMnist(args=args).to(args.device)
+        # net_glob = CNNMnist(args=args).to(args.device)
+        net_glob = MNIST_CNN_Net().to(args.device)
     elif args.dataset == 'femnist' and args.model == 'cnn':
         net_glob = CNNFemnist(args=args).to(args.device)
     elif args.dataset == 'shakespeare' and args.model == 'lstm':
@@ -105,7 +113,7 @@ if __name__ == '__main__':
             len_in *= x
         net_glob = MLP(dim_in=len_in, dim_hidden=64, dim_out=args.num_classes).to(args.device)
     else:
-        exit('Error: unrecognized model')
+        sys.exit('Error: unrecognized model')
 
     dp_epsilon = args.dp_epsilon / (args.frac * args.epochs)
     dp_delta = args.dp_delta
@@ -117,20 +125,33 @@ if __name__ == '__main__':
 
     # copy weights
     w_glob = net_glob.state_dict()
-
     all_clients = list(range(args.num_users))
+    prepareTime = getPrepareTime(args.num_users)  # FedSA
+    currentLostTime = copy.deepcopy(prepareTime)
 
     # training
-    acc_test = []
+    # acc_test = []
+    acc_test = {}
     learning_rate = [args.lr for i in range(args.num_users)]
-    for iter in range(args.epochs):
+    runtime = 0
+
+    # for iter in range(args.epochs):
+    rnd = 1
+    while rnd < 1000:
         w_locals, loss_locals = [], []
         m = max(int(args.frac * args.num_users), 1)
-        idxs_users = np.random.choice(range(args.num_users), m, replace=False)
-        begin_index = iter % (1 / args.frac)
-        idxs_clients = all_clients[int(begin_index * args.num_users * args.frac):
-                                   int((begin_index + 1) * args.num_users * args.frac)]
-        for idx in idxs_users:
+        # idxs_users = np.random.choice(range(args.num_users), m, replace=False)  # 修改为FedSA的半异步选择客户方法
+        if args.sync:  # 同步
+            chosenClients, currentLostTime, iterationTime = chooseClientsSync(args.num_users,
+                                                                              m, prepareTime, currentLostTime)
+        else:     # 半异步
+            chosenClients, currentLostTime, iterationTime = chooseClientsSemiAsync(m, prepareTime, currentLostTime)
+
+        runtime += iterationTime
+        # chosenClients = addStaleClients(tau)
+
+        # 本地训练
+        for idx in chosenClients:
             args.lr = learning_rate[idx]
             local = LocalUpdate(args=args, dataset=dataset_train, idxs=dict_users[idx],
                                 dp_epsilon=dp_epsilon, dp_delta=dp_delta,
@@ -140,34 +161,32 @@ if __name__ == '__main__':
             w_locals.append(copy.deepcopy(w))
             loss_locals.append(copy.deepcopy(loss))
 
-        # update global weights
-        w_glob = FedAvg(w_locals)
-        # copy weight to net_glob
-        net_glob.load_state_dict(w_glob)
+        w_glob = FedAvg(w_locals)   # update global weights
+        net_glob.load_state_dict(w_glob)    # copy weight to net_glob
 
         # print accuracy
         net_glob.eval()
         acc_t, loss_t = test_img(net_glob, dataset_test, args)
-        print("Round {:3d},Testing accuracy: {:.2f}".format(iter, acc_t))
-
-        acc_test.append(acc_t.item())
+        print("Round {:3d},Testing accuracy: {:.2f}".format(rnd, acc_t))
+        rnd += 1
+        acc_test[runtime] = acc_t.item()
 
     rootpath = './log'
     if not os.path.exists(rootpath):
         os.makedirs(rootpath)
-    accfile = open(rootpath + '/accfile_fed_{}_{}_{}_iid{}_dp_{}_epsilon_{}.dat'.
+    accfile = open(rootpath + '/' + str(args.sync) + '_accfile_fed_{}_{}_{}_iid{}_dp_{}_epsilon_{}_{}.txt'.
                    format(args.dataset, args.model, args.epochs, args.iid,
-                          args.dp_mechanism, args.dp_epsilon), "w")
+                          args.dp_mechanism, args.dp_epsilon, args.frac), "w")
 
-    for ac in acc_test:
-        sac = str(ac)
+    for it in acc_test.items():
+        sac = str(it)
         accfile.write(sac)
         accfile.write('\n')
     accfile.close()
 
     # plot loss curve
     plt.figure()
-    plt.plot(range(len(acc_test)), acc_test)
+    plt.plot(acc_test.keys(), acc_test.values())
     plt.ylabel('test accuracy')
-    plt.savefig(rootpath + '/fed_{}_{}_{}_C{}_iid{}_dp_{}_epsilon_{}_acc.png'.format(
-        args.dataset, args.model, args.epochs, args.frac, args.iid, args.dp_mechanism, args.dp_epsilon))
+    plt.savefig(rootpath + '/' + str(args.sync) + '_fed_{}_{}_{}_C{}_iid{}_dp_{}_epsilon_{}_{}_acc.png'.format(
+        args.dataset, args.model, args.epochs, args.frac, args.iid, args.dp_mechanism, args.dp_epsilon, args.frac))
