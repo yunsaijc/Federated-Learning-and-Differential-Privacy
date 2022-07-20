@@ -137,7 +137,7 @@ if __name__ == '__main__':
 
     # for iter in range(args.epochs):
     rnd = 1
-    while rnd < 1000:
+    while rnd < 700:
         w_locals, loss_locals = [], []
         m = max(int(args.frac * args.num_users), 1)
         # idxs_users = np.random.choice(range(args.num_users), m, replace=False)  # 修改为FedSA的半异步选择客户方法
