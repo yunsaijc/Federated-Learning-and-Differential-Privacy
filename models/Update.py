@@ -25,7 +25,8 @@ class DatasetSplit(Dataset):
 
 
 class LocalUpdate(object):
-    def __init__(self, args, dataset=None, idxs=None, dp_mechanism='no_dp', dp_epsilon=20, dp_delta=1e-5, dp_clip=20):
+    def __init__(self, args, dataset=None, idxs=None, dp_mechanism='no_dp',
+                 dp_epsilon=20, dp_delta=1e-5, dp_clip=20, learning_rate=0.01):
         self.args = args
         self.loss_func = nn.CrossEntropyLoss()
         self.selected_clients = []
@@ -35,19 +36,22 @@ class LocalUpdate(object):
         self.dp_delta = dp_delta
         self.dp_clip = dp_clip
         self.idxs = idxs
+        self.learning_rate = learning_rate
 
     def train(self, net):
         net.train()
         # train and update
-        optimizer = torch.optim.SGD(net.parameters(), lr=self.args.lr, momentum=self.args.momentum)
-        scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=1, gamma=self.args.lr_decay)
+        # optimizer = torch.optim.SGD(net.parameters(), lr=self.args.lr, momentum=self.args.momentum)
+        optimizer = torch.optim.SGD(net.parameters(), lr=self.learning_rate)
+        # scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=1, gamma=self.args.lr_decay)
 
         epoch_loss = []
         for iter in range(self.args.local_ep):
             batch_loss = []
             for batch_idx, (images, labels) in enumerate(self.ldr_train):
                 images, labels = images.to(self.args.device), labels.to(self.args.device)
-                net.zero_grad()
+                # net.zero_grad()
+                optimizer.zero_grad()
                 log_probs = net(images)
                 # print(list(log_probs.size()))
                 # print(labels)
@@ -56,14 +60,14 @@ class LocalUpdate(object):
                 if self.dp_mechanism != 'no_dp':
                     self.clip_gradients(net)
                 optimizer.step()
-                scheduler.step()
+                # scheduler.step()
                 batch_loss.append(loss.item())
             epoch_loss.append(sum(batch_loss)/len(batch_loss))
 
         # add noises to parameters
         if self.dp_mechanism != 'no_dp':
             self.add_noise(net)
-        return net.state_dict(), sum(epoch_loss) / len(epoch_loss), scheduler.get_last_lr()[0]
+        return net.state_dict(), sum(epoch_loss) / len(epoch_loss) # , scheduler.get_last_lr()[0]
 
     def clip_gradients(self, net):
         if self.dp_mechanism == 'Laplace':
@@ -76,7 +80,7 @@ class LocalUpdate(object):
                 v.grad /= max(1, v.grad.norm(2) / self.dp_clip)
 
     def add_noise(self, net):
-        sensitivity = cal_sensitivity(self.args.lr, self.dp_clip, len(self.idxs))
+        sensitivity = cal_sensitivity(self.learning_rate, self.dp_clip, len(self.idxs))
         if self.dp_mechanism == 'Laplace':
             with torch.no_grad():
                 for k, v in net.named_parameters():

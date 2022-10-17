@@ -39,14 +39,17 @@ def mnist_iid(dataset, num_users):
     """
     filePath = '../data/mnist_iid_{}clients.dat'.format(num_users)
     dict_users = {}
-    try:
-        dict_users = openSamplingFile(filePath)
-    except FileNotFoundError:
-        num_items = int(len(dataset) / num_users)
-        all_idxs = [i for i in range(len(dataset))]
-        for i in range(num_users):
-            dict_users[i] = set(np.random.choice(all_idxs, num_items, replace=False))
-            all_idxs = list(set(all_idxs) - dict_users[i])
+    # try:
+    #     dict_users = openSamplingFile(filePath)
+    # except FileNotFoundError:
+    num_items = int(len(dataset) / num_users)
+    # num_items = int((0.5 * len(dataset)) / num_users)
+    all_idxs = [i for i in range(len(dataset))]
+    # all_idxs = [i for i in range(int(0.5 * len(dataset)))]
+    for i in range(num_users):
+        # dict_users[i] = set(np.random.choice(all_idxs, num_items, replace=False))
+        dict_users[i] = set(all_idxs[num_items*i: num_items*(i+1)])
+        # all_idxs = list(set(all_idxs) - dict_users[i])
     if dict_users == {}:
         return "Error"
     return dict_users

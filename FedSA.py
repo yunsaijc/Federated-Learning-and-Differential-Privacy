@@ -15,7 +15,7 @@ from utils.sampling import mnist_iid, mnist_noniid, cifar_iid, cifar_noniid
 from utils.options import args_parser
 from models.Update import LocalUpdate
 from models.Nets import MLP, CNNMnist, CNNCifar, CNNFemnist, CharLSTM, MNIST_CNN_Net
-from models.Fed import FedAvg
+from models.Fed import FedAvg, FedSA_Agg, FedSA
 from models.test import test_img
 from utils.dataset import FEMNIST, ShakeSpeare
 from utils.Functions import *
@@ -126,19 +126,31 @@ if __name__ == '__main__':
     # copy weights
     w_glob = net_glob.state_dict()
     all_clients = list(range(args.num_users))
+
     prepareTime = getPrepareTime(args.num_users)  # FedSA
+    # print(prepareTime)
     currentLostTime = copy.deepcopy(prepareTime)
 
     # training
     # acc_test = []
     acc_test = {}
+    global_learning_rate = args.lr
     learning_rate = [args.lr for i in range(args.num_users)]
     runtime = 0
 
     # for iter in range(args.epochs):
     rnd = 1
-    while rnd < 700:
-        w_locals, loss_locals = [], []
+    count = {}
+    tau = {}  # 模型延迟
+    tau_th = 20  # 模型延迟的阈值
+    for i in range(args.num_users):
+        tau[i] = 0
+        count[i] = 0
+
+    while rnd < args.epochs:
+    # while runtime < 7000:
+        # w_locals, loss_locals = [], []
+        w_locals, loss_locals = {}, []
         m = max(int(args.frac * args.num_users), 1)
         # idxs_users = np.random.choice(range(args.num_users), m, replace=False)  # 修改为FedSA的半异步选择客户方法
         if args.sync:  # 同步
@@ -148,21 +160,43 @@ if __name__ == '__main__':
             chosenClients, currentLostTime, iterationTime = chooseClientsSemiAsync(m, prepareTime, currentLostTime)
 
         runtime += iterationTime
-        # chosenClients = addStaleClients(tau)
 
         # 本地训练
         for idx in chosenClients:
-            args.lr = learning_rate[idx]
+            count[idx] += 1
+            # args.lr = learning_rate[idx]
             local = LocalUpdate(args=args, dataset=dataset_train, idxs=dict_users[idx],
                                 dp_epsilon=dp_epsilon, dp_delta=dp_delta,
-                                dp_mechanism=dp_mechanism, dp_clip=dp_clip)
-            w, loss, curLR = local.train(net=copy.deepcopy(net_glob).to(args.device))
-            learning_rate[idx] = curLR
-            w_locals.append(copy.deepcopy(w))
+                                dp_mechanism=dp_mechanism, dp_clip=dp_clip, learning_rate=learning_rate[idx])
+            w, loss = local.train(net=copy.deepcopy(net_glob).to(args.device))
+            # learning_rate[idx] = curLR
+            # w_locals.append(copy.deepcopy(w))
+            w_locals[idx] = copy.deepcopy(w)
             loss_locals.append(copy.deepcopy(loss))
 
-        w_glob = FedAvg(w_locals)   # update global weights
+        # 更新自适应学习率
+        count_total = sum(count.values())
+        f = {}
+        for idx in chosenClients:
+            f[idx] = count[idx] / count_total
+        for idx in chosenClients:
+            frequency = f[idx]
+            true_learning_rate = global_learning_rate / (args.num_users * frequency)
+            true_learning_rate = max(0.001, true_learning_rate)
+            learning_rate[idx] = true_learning_rate
+
+        # 全局更新
+        # w_glob = FedAvg(w_locals)           # update global weights
+        tmp_net_glob = copy.deepcopy(net_glob.state_dict())
+        # w_glob = FedSA_Agg(tmp_net_glob, args.num_users, chosenClients, w_locals, tau, tau_th)
+        w_glob = FedSA(args.sync, tmp_net_glob, w_locals, args.frac, tau, tau_th, chosenClients)
         net_glob.load_state_dict(w_glob)    # copy weight to net_glob
+
+        for i in range(args.num_users):
+            if i in chosenClients:
+                tau[i] = 0
+            else:
+                tau[i] += 1
 
         # print accuracy
         net_glob.eval()
