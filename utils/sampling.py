@@ -47,9 +47,9 @@ def mnist_iid(dataset, num_users):
     all_idxs = [i for i in range(len(dataset))]
     # all_idxs = [i for i in range(int(0.5 * len(dataset)))]
     for i in range(num_users):
-        # dict_users[i] = set(np.random.choice(all_idxs, num_items, replace=False))
-        dict_users[i] = set(all_idxs[num_items*i: num_items*(i+1)])
-        # all_idxs = list(set(all_idxs) - dict_users[i])
+        dict_users[i] = set(np.random.choice(all_idxs, num_items, replace=False))
+        # dict_users[i] = set(all_idxs[num_items*i: num_items*(i+1)])
+        all_idxs = list(set(all_idxs) - dict_users[i])
     if dict_users == {}:
         return "Error"
     return dict_users
@@ -62,28 +62,46 @@ def mnist_noniid(dataset, num_users):
     :param num_users:
     :return:
     """
-    filePath = '../data/mnist_noniid_{}clients.dat'.format(num_users)
-    dict_users = {}
-    try:
-        dict_users = openSamplingFile(filePath)
-    except FileNotFoundError:
-        num_shards, num_imgs = num_users * 2, int(len(dataset) / (num_users * 2))
-        idx_shard = [i for i in range(num_shards)]
-        dict_users = {i: np.array([], dtype='int64') for i in range(num_users)}
-        idxs = np.arange(num_shards * num_imgs)
-        labels = dataset.train_labels.numpy()
+    # filePath = '../data/mnist_noniid_{}clients.dat'.format(num_users)
+    # dict_users = {}
+    # try:
+    #     dict_users = openSamplingFile(filePath)
+    # except FileNotFoundError:
+    # num_shards, num_imgs = num_users * 2, int(len(dataset) / (num_users * 2))
+    # idx_shard = [i for i in range(num_shards)]
+    dict_users = {i: np.array([], dtype='int64') for i in range(num_users)}
+    idxs = np.arange(len(dataset))
+    labels = dataset.train_labels.numpy()
 
-        # sort labels
-        idxs_labels = np.vstack((idxs, labels))
-        idxs_labels = idxs_labels[:, idxs_labels[1, :].argsort()]
-        idxs = idxs_labels[0, :]
+    # sort labels
+    idxs_labels = np.vstack((idxs, labels))
+    idxs_labels = idxs_labels[:, idxs_labels[1, :].argsort()]
+    tmp = []
+    for i in range(len(idxs_labels[0])):
+        if idxs_labels[1, i] % 2 != 0:
+            tmp.append(idxs_labels[0, i])
+    idxs = idxs_labels[0, :]
+    group1 = set(tmp)
+    group2 = set(set(idxs) - group1)
+    group1 = list(group1)
+    group2 = list(group2)
+    shard1 = len(group1) // (num_users // 2)
+    shard2 = len(group2) // (num_users // 2)
 
-        # divide and assign
-        for i in range(num_users):
-            rand_set = set(np.random.choice(idx_shard, 2, replace=False))
-            idx_shard = list(set(idx_shard) - rand_set)
-            for rand in rand_set:
-                dict_users[i] = np.concatenate((dict_users[i], idxs[rand * num_imgs:(rand + 1) * num_imgs]), axis=0)
+    # divide and assign
+    for i in range(num_users):
+        if i < (num_users // 2):
+            rand_set = set(np.random.choice(group1, shard1, replace=False))
+            group1 = list(set(group1) - rand_set)
+            dict_users[i] = rand_set
+        else:
+            rand_set = set(np.random.choice(group2, shard2, replace=False))
+            group2 = list(set(group2) - rand_set)
+            dict_users[i] = rand_set
+        # rand_set = set(np.random.choice(idx_shard, 2, replace=False))
+        # idx_shard = list(set(idx_shard) - rand_set)
+        # for rand in rand_set:
+        #     dict_users[i] = np.concatenate((dict_users[i], idxs[rand * num_imgs:(rand + 1) * num_imgs]), axis=0)
     if dict_users == {}:
         return "Error"
     return dict_users
@@ -174,28 +192,59 @@ def cifar_noniid(dataset, num_users):
     :param num_users:
     :return:
     """
-    filePath = '../data/cifar_noniid_{}clients.dat'.format(num_users)
-    dict_users = {}
-    try:
-        dict_users = openSamplingFile(filePath)
-    except FileNotFoundError:
-        num_shards, num_imgs = num_users * 2, int(len(dataset) / (num_users * 2))
-        idx_shard = [i for i in range(num_shards)]
-        dict_users = {i: np.array([], dtype='int64') for i in range(num_users)}
-        idxs = np.arange(num_shards * num_imgs)
-        # labels = dataset.train_labels.numpy()
-        labels = np.array(dataset.targets)
-        # sort labels
-        idxs_labels = np.vstack((idxs, labels))
-        idxs_labels = idxs_labels[:, idxs_labels[1, :].argsort()]
-        idxs = idxs_labels[0, :]
-        # divide and assign
-        for i in range(num_users):
-            rand_set = set(np.random.choice(idx_shard, 2, replace=False))
-            idx_shard = list(set(idx_shard) - rand_set)
-            for rand in rand_set:
-                dict_users[i] = np.concatenate(
-                    (dict_users[i], idxs[rand * num_imgs:(rand + 1) * num_imgs]), axis=0)
+    # filePath = '../data/cifar_noniid_{}clients.dat'.format(num_users)
+    # dict_users = {}
+    # try:
+    #     dict_users = openSamplingFile(filePath)
+    # except FileNotFoundError:
+    # num_shards, num_imgs = num_users * 2, int(len(dataset) / (num_users * 2))
+    # idx_shard = [i for i in range(num_shards)]
+    dict_users = {i: np.array([], dtype='int64') for i in range(num_users)}
+    idxs = np.arange(len(dataset))
+    # labels = dataset.train_labels.numpy()
+    labels = np.array(dataset.targets)
+
+    # # sort labels
+    # idxs_labels = np.vstack((idxs, labels))
+    # idxs_labels = idxs_labels[:, idxs_labels[1, :].argsort()]
+    # idxs = idxs_labels[0, :]
+    #
+    # # divide and assign
+    # for i in range(num_users):
+    #     rand_set = set(np.random.choice(idx_shard, 2, replace=False))
+    #     idx_shard = list(set(idx_shard) - rand_set)
+    #     for rand in rand_set:
+    #         dict_users[i] = np.concatenate(
+    #             (dict_users[i], idxs[rand * num_imgs:(rand + 1) * num_imgs]), axis=0)
+
+    idxs_labels = np.vstack((idxs, labels))
+    idxs_labels = idxs_labels[:, idxs_labels[1, :].argsort()]
+    tmp = []
+    for i in range(len(idxs_labels[0])):
+        if idxs_labels[1, i] % 2 != 0:
+            tmp.append(idxs_labels[0, i])
+    idxs = idxs_labels[0, :]
+    group1 = set(tmp)
+    group2 = set(set(idxs) - group1)
+    group1 = list(group1)
+    group2 = list(group2)
+    shard1 = len(group1) // (num_users // 2)
+    shard2 = len(group2) // (num_users // 2)
+
+    # divide and assign
+    for i in range(num_users):
+        if i < (num_users // 2):
+            rand_set = set(np.random.choice(group1, shard1, replace=False))
+            group1 = list(set(group1) - rand_set)
+            dict_users[i] = rand_set
+        else:
+            rand_set = set(np.random.choice(group2, shard2, replace=False))
+            group2 = list(set(group2) - rand_set)
+            dict_users[i] = rand_set
+        # rand_set = set(np.random.choice(idx_shard, 2, replace=False))
+        # idx_shard = list(set(idx_shard) - rand_set)
+        # for rand in rand_set:
+        #     dict_users[i] = np.concatenate((dict_users[i], idxs[rand * num_imgs:(rand + 1) * num_imgs]), axis=0)
     if dict_users == {}:
         return "Error"
     return dict_users

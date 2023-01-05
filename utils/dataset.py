@@ -171,7 +171,6 @@ def read_dir(data_dir):
     return clients, groups, data
 
 
-
 def read_data(train_data_dir, test_data_dir):
     '''parses data in given train and test data directories
 
