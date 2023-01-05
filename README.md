@@ -8,7 +8,7 @@
 
 运行环境：python 3.6
 
-本代码基于仓库https://github.com/wenzhu23333/Differential-Privacy-Based-Federated-Learning实现。
+本代码基于以下仓库实现： https://github.com/wenzhu23333/Differential-Privacy-Based-Federated-Learning
 
 ## 文件结构说明
 
