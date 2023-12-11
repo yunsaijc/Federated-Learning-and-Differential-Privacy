@@ -17,20 +17,13 @@
 ```
 myFed
 │  myFed.py			//项目main文件
-│  plot.py			//用于作图的文件
+│  plot.py			//作图文件
 │  predictParams.py	//用于估算参数(tau,t_avg,K等)的文件
 │  README.md
-│  requirements.txt	//依赖包与版本
+│  requirements.txt
 │  
 ├─.idea
 ├─data				//存放数据集文件
-├─FilesAndFigs		//需要的图
-│  ├─p2     //文件夹名与PPT中的页码相对应，包含相应的数据文件与作图结果
-│  ├─p3
-│  ├─p4
-│  ├─p5
-│  ├─p6
-│  └─p7
 ├─log       //代码运行记录
 ├─models    //网络模型相关文件
 │  │  Fed.py        //全局更新函数
